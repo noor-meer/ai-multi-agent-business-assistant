@@ -1,0 +1,684 @@
+{
+  "name": "AI Multi-Agent Business Assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assistant-intake",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        120
+      ],
+      "id": "acbf61cb-c60f-43a2-9c90-ebce06c80d87",
+      "name": "Webhook",
+      "webhookId": "00872a74-de6f-4772-841c-70a05da78d55"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\n\nif (!body.message) {\n  throw new Error(\"Missing required field: 'message'\");\n}\n\nreturn [{\n  json: {\n    customer_name: body.customer_name || \"Customer\",\n    customer_email: body.customer_email || \"\",\n    message: body.message\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        120
+      ],
+      "id": "167c9f92-6661-4346-b10e-c3b129a6a35f",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "GPT-4O"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "=You are an orchestrator agent for a business's virtual front desk. Your job is to read a customer's message and determine what they need, so the request can be routed to the correct specialist."
+            },
+            {
+              "content": "=Customer name: {{ $json.customer_name }}\nCustomer message: {{ $json.message }}\n\nAnalyze this message and determine:\n1. Does the customer want to book/schedule an appointment? (true/false)\n2. Does the customer have a question that requires looking up company policy or FAQ information? (true/false)\n3. Is this message unclear, sensitive, or something an AI should not handle alone (e.g., a complaint, a legal question, extreme frustration)? (true/false)\n\nAlso extract:\n- If scheduling is needed: what date/time preference did they mention, if any? (or null)\n- If a knowledge question exists: what exactly are they asking about, phrased as a clear standalone question?\n\nRespond with ONLY a valid JSON object in this exact structure, no extra text, no markdown, no code fences:\n{\"needs_scheduling\": true, \"needs_knowledge_answer\": true, \"needs_escalation\": false, \"scheduling_preference\": \"next Tuesday afternoon\", \"knowledge_question\": \"What is your refund policy?\"}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2,
+      "position": [
+        448,
+        120
+      ],
+      "id": "19d18270-87b8-4166-98c0-79d116a78781",
+      "name": "Message a model",
+      "credentials": {
+        "openAiApi": {
+          "id": "ZTh5Yex7rBekMvk6",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let raw = $input.first().json.output[0].content[0].text;\n\n// Strip markdown code fences if present\nraw = raw.replace(/```json\\s*/g, '').replace(/```\\s*/g, '').trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (e) {\n  throw new Error(\"Orchestrator did not return valid JSON: \" + raw);\n}\n\nreturn [{\n  json: {\n    customer_name: $('Code in JavaScript').first().json.customer_name,\n    customer_email: $('Code in JavaScript').first().json.customer_email,\n    original_message: $('Code in JavaScript').first().json.message,\n    needs_scheduling: parsed.needs_scheduling,\n    needs_knowledge_answer: parsed.needs_knowledge_answer,\n    needs_escalation: parsed.needs_escalation,\n    scheduling_preference: parsed.scheduling_preference,\n    knowledge_question: parsed.knowledge_question\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        120
+      ],
+      "id": "a04946f8-14a5-4ea6-9a46-c6398fa6ee43",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e6754016-1c98-4d04-be11-12d397b815fb",
+              "leftValue": "={{ $json.needs_scheduling }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1024,
+        -176
+      ],
+      "id": "cdca5c72-037a-4e46-b7f5-b760dc1a1abd",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0ec3034e-7c23-4b75-9054-4fc55fdea39b",
+              "leftValue": "={{ $json.needs_knowledge_answer }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1024,
+        120
+      ],
+      "id": "de86a93e-5b0d-4024-bb62-485f86c54b87",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "calendar": {
+          "__rl": true,
+          "value": "noor.meer2003@gmail.com",
+          "mode": "list",
+          "cachedResultName": "noor.meer2003@gmail.com"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1312,
+        -176
+      ],
+      "id": "18a0d6ec-b789-4977-a739-477f12d067fa",
+      "name": "Get many events",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "tgepGXtZHTECmSdr",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const availability = $input.first().json;\nconst preference = $('Code in JavaScript1').first().json.scheduling_preference;\n\n// Simple slot-picking logic: find the next available business-hour slot\n// (This is a simplified version — good enough for a working demo)\nconst now = new Date();\nlet proposedStart = new Date(now);\nproposedStart.setDate(proposedStart.getDate() + 1); // default: tomorrow\nproposedStart.setHours(14, 0, 0, 0); // default: 2 PM\n\nconst proposedEnd = new Date(proposedStart);\nproposedEnd.setHours(proposedEnd.getHours() + 1); // 1-hour appointment\n\nreturn [{\n  json: {\n    customer_name: $('Code in JavaScript1').first().json.customer_name,\n    customer_email: $('Code in JavaScript1').first().json.customer_email,\n    original_message: $('Code in JavaScript1').first().json.original_message,\n    proposed_start: proposedStart.toISOString(),\n    proposed_end: proposedEnd.toISOString(),\n    scheduling_preference: preference\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        -176
+      ],
+      "id": "c569d208-b315-4a2e-89dd-48d953d1da4c",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "noor.meer2003@gmail.com",
+          "mode": "list",
+          "cachedResultName": "noor.meer2003@gmail.com"
+        },
+        "start": "={{ $json.proposed_start }}",
+        "end": "={{ $json.proposed_end }}",
+        "additionalFields": {
+          "attendees": [
+            "={{ $json.customer_email }}"
+          ],
+          "description": "={{ $json.original_message }}",
+          "summary": "=Consultation with {{ $json.customer_name }}"
+        }
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1888,
+        -176
+      ],
+      "id": "a9e6760c-5bc8-491f-a834-e964415b129d",
+      "name": "Create an event",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "tgepGXtZHTECmSdr",
+          "name": "Google Calendar account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2dcd732d-7743-40e3-b33c-a9597a6ccdeb",
+              "leftValue": "={{ $json.needs_escalation }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1024,
+        416
+      ],
+      "id": "0f36baea-4748-48ec-8b7b-74abfa795403",
+      "name": "If2"
+    },
+    {
+      "parameters": {
+        "mode": "load",
+        "pineconeIndex": {
+          "__rl": true,
+          "value": "business-assistant-kb",
+          "mode": "list",
+          "cachedResultName": "business-assistant-kb"
+        },
+        "prompt": "=     {{ $('Code in JavaScript1').item.json.knowledge_question }}",
+        "topK": 3,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.3,
+      "position": [
+        1248,
+        16
+      ],
+      "id": "2465d281-3cc0-4e68-a49e-10c31948102e",
+      "name": "Pinecone Vector Store",
+      "credentials": {
+        "pineconeApi": {
+          "id": "csAAMOwIdnTto0Jy",
+          "name": "PineconeApi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        1320,
+        240
+      ],
+      "id": "92715d0c-7c5f-4b95-b842-2238275829e2",
+      "name": "Embeddings OpenAI",
+      "credentials": {
+        "openAiApi": {
+          "id": "ZTh5Yex7rBekMvk6",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst context = items.map(item => item.json.document?.pageContent || \"\").join(\"\\n\\n\");\nreturn [{\n  json: {\n    retrieved_context: context,\n    knowledge_question: $('Code in JavaScript1').first().json.knowledge_question,\n    customer_name: $('Code in JavaScript1').first().json.customer_name,\n    customer_email: $('Code in JavaScript1').first().json.customer_email\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        120
+      ],
+      "id": "c265a28c-3497-46ff-b96d-e32f0c5b5d1d",
+      "name": "Code in JavaScript3"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a knowledge agent. Answer using ONLY the provided context. If not covered, say you don't have that information."
+            },
+            {
+              "content": "=Context:\\n{{ $json.retrieved_context }}\\n\\nCustomer question: {{ $json.knowledge_question }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2,
+      "position": [
+        1824,
+        120
+      ],
+      "id": "7a0c97b0-44a2-4822-aee3-76cff0f64a66",
+      "name": "Message a model1",
+      "credentials": {
+        "openAiApi": {
+          "id": "ZTh5Yex7rBekMvk6",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "noor.meer2003@gmail.com",
+        "subject": "=🚨 Urgent: Customer Escalation — {{ $('Code in JavaScript1').item.json.customer_name }}",
+        "message": "=🚨 Escalation Alert — Immediate Attention Needed  Customer Name: {{ $('Code in JavaScript1').item.json.customer_name }} Customer Email: {{ $('Code in JavaScript1').item.json.customer_email }}  Customer's Message: \"{{ $('Code in JavaScript1').item.json.original_message }}\"  This message was flagged by the AI assistant as requiring human review. Please follow up with the customer as soon as possible.  --- This alert was generated automatically by the AI Multi-Agent Business Assistant.",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1312,
+        416
+      ],
+      "id": "cd6b852f-df49-4dcd-9e66-c43b3847bfc4",
+      "name": "Send a message",
+      "webhookId": "6bc1e740-472a-400c-84ab-2cd7b184f043",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "YKIQFS75DoNixvym",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2176,
+        -28
+      ],
+      "id": "8772c7d0-81bb-4af9-b639-511850e45b04",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "let scheduling_confirmed = false;\nlet confirmed_datetime = null;\nlet knowledge_answer = null;\n\nlet event_link = null;\ntry { \n  const eventData = $('Create an event').first().json;\n  scheduling_confirmed = true;\n  confirmed_datetime = eventData.start.dateTime || eventData.start;\n  event_link = eventData.htmlLink;\n} catch(e) {} \n\ntry { \n  knowledge_answer = $('Message a model1').first().json.output[0].content[0].text; \n} catch(e) {}\n\nreturn [{\n  json: {\n    customer_name: $('Code in JavaScript1').first().json.customer_name,\n    customer_email: $('Code in JavaScript1').first().json.customer_email,\n    scheduling_confirmed,\n    confirmed_datetime,\n    event_link,\n    knowledge_answer\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        -28
+      ],
+      "id": "6e8948af-a82a-4d9e-880a-fd5de1d8f829",
+      "name": "Code in JavaScript4"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "=Write a warm, professional email reply from \"ClarityWorks Consulting\" to a customer, combining the information given below.\n\nRules:\n- Do NOT include a \"Subject:\" line — the subject is handled separately.\n- Do NOT use placeholder text like [Your Name] — sign off as \"The ClarityWorks Team\".\n- If scheduling_confirmed is true, clearly state the exact confirmed date and time from the data provided, so the customer has concrete proof of their booking. Also mention that a calendar invite/confirmation has been sent to their email.\n- If a knowledge_answer is provided, include that information naturally in the same email.\n- Keep it concise, warm, and professional. Just the email body text, nothing else.\n- If scheduling_confirmed is true and an event_link is provided, include that link in the email as a clickable reference so the customer can view/verify their booking directly (e.g., \"You can view your appointment here: [link]\").\n- Write each paragraph as a single continuous line of text (do not manually break lines within a paragraph). Use a blank line only between separate paragraphs, never in the middle of a sentence or thought."
+            },
+            {
+              "content": "={{ JSON.stringify($json) }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2,
+      "position": [
+        2624,
+        -28
+      ],
+      "id": "9c9d0e37-44f4-4cbf-8408-7875b2db3600",
+      "name": "Message a model2",
+      "credentials": {
+        "openAiApi": {
+          "id": "ZTh5Yex7rBekMvk6",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Code in JavaScript1').first().json.customer_email }}",
+        "subject": "Following up on your message",
+        "emailType": "text",
+        "message": "={{ $json.output[0].content[0].text }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2976,
+        -32
+      ],
+      "id": "3928e9eb-cc12-441b-9fbe-cdd9227b386c",
+      "name": "Send a message1",
+      "webhookId": "1db12fa2-2152-43b9-b168-45b83e241c7c",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "UlopsgxwdE5sdM2b",
+          "name": "Gmail account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "If2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Pinecone Vector Store",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Get many events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get many events": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "Create an event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings OpenAI": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Pinecone Vector Store",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pinecone Vector Store": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        [
+          {
+            "node": "Message a model1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If2": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create an event": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model1": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript4": {
+      "main": [
+        [
+          {
+            "node": "Message a model2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model2": {
+      "main": [
+        [
+          {
+            "node": "Send a message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "621e1816-a6e0-415b-9f7d-d1b87e201443",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "6e48c2ac2e73de7edc978e08e8b137adf589ed9f5cfd002a6be4572196f59fd1"
+  },
+  "id": "m4pJrvREVTvDJlhH",
+  "tags": []
+}
