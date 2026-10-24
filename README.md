@@ -80,7 +80,7 @@ Watch the project walkthrough:
 
 **[View Project Demo](https://github.com/noor-meer/ai-multi-agent-business-assistant)**
 
-## 👩‍💻 Author
+## 👩‍💻 Built By
 
 **Noor ul Ain**
 
