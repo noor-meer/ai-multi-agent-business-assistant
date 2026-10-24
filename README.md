@@ -82,7 +82,8 @@ Watch the project walkthrough:
 
 ## 👩‍💻 Author
 
-Noor ul Ain
+**Noor ul Ain**
+
 Agentic AI Developer | AI Automation | Python | n8n | RAG
 
-🔗 [GitHub Profile](https://github.com/noor-meer)
+
