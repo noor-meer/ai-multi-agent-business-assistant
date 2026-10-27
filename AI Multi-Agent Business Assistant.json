@@ -1,0 +1,2191 @@
+{
+  "name": "AI Multi-Agent Business Assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "business-assistant",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -928,
+        1000
+      ],
+      "id": "e78a949f-3ffa-49b3-8922-72bb55405590",
+      "name": "Receive Customer Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst input = $input.first().json;\nconst body = input.body ?? input;\n\nconst customerMessage = body.message ?? body.query ?? body.chatInput;\nconst customerEmail = body.customer_email ?? body.email ?? \"\";\nconst customerName = body.customer_name ?? body.name ?? \"\";\n\nif (typeof customerMessage !== \"string\" || !customerMessage.trim()) {\n  throw new Error(\"Customer message is required.\");\n}\n\nreturn [{\n  json: {\n    customer_message: customerMessage.trim(),\n    customer_name: String(customerName).trim(),\n    customer_email: String(customerEmail).trim(),\n    received_at: new Date().toISOString(),\n    source: \"webhook\"\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -704,
+        1000
+      ],
+      "id": "d93cf705-db01-4de5-911f-415b9aea367e",
+      "name": "Validate Customer Input"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "=You are the intent classifier and appointment-information extractor for ClarityWorks Consulting.\n\nYour task is to identify customer intents, preserve their original request, extract appointment details accurately, and return structured JSON for the downstream n8n workflow.\n\n## REQUIRED OUTPUT\n\nReturn ONLY one valid JSON object using exactly this structure:\n\n{\n  \"intents\": [\"knowledge\"],\n  \"customer_message\": \"original customer message\",\n  \"appointment_date\": null,\n  \"start_time\": null,\n  \"end_time\": null,\n  \"original_appointment_date\": null,\n  \"original_start_time\": null,\n  \"timezone\": \"Asia/Karachi\",\n  \"customer_name\": null,\n  \"customer_email\": null,\n  \"missing_information\": [],\n  \"requires_human\": false\n}\n\n## 1. INTENT CLASSIFICATION\n\nAllowed intents:\n- knowledge\n- check_availability\n- book_appointment\n- reschedule_appointment\n- cancel_appointment\n- human_support\n\nIdentify all applicable intents.\n\nUse:\n- knowledge for questions about business hours, company information, services, and policies.\n- check_availability when the customer asks about available appointment slots.\n- book_appointment when the customer wants to schedule a new appointment.\n- reschedule_appointment when the customer wants to change an existing appointment.\n- cancel_appointment when the customer wants to cancel an existing appointment.\n- human_support when the customer asks for a human or needs human intervention.\n\nA customer can have multiple intents.\n\nDo not classify an unclear statement as a confirmed booking request without sufficient context.\n\n## 2. PRESERVE THE CUSTOMER MESSAGE\n\n- Preserve the original customer message in customer_message.\n- Do not replace it with a summary.\n- Do not invent information.\n- Use the customer's latest explicit correction when they correct a name, email, date, or time.\n- Preserve names and email addresses exactly as supplied whenever possible.\n\n## 3. CURRENT DATE AND RELATIVE DATES\n\nThe user message supplies the current date and time in Asia/Karachi.\n\nUse that supplied date and time as the reference for interpreting today, tomorrow, this Saturday, next Saturday, and other relative dates.\n\nFor new appointment requests and requested rescheduling dates:\n- If the customer supplies an explicit calendar date, extract that date.\n- If the customer supplies a weekday without a calendar date, calculate the next occurrence of that weekday after the supplied current date, unless the customer clearly indicates another intended date.\n- If the intended date is ambiguous, ask the customer to clarify rather than guessing.\n- Never use a date from a previous execution, unrelated conversation, old example, or hardcoded historical value.\n- Return dates in YYYY-MM-DD format.\n- If a date cannot be determined reliably, return null for the relevant field and include that field name in missing_information.\n\n## 4. TIME EXTRACTION\n\nReturn times in 24-hour HH:mm format.\n\nExamples:\n- 2 AM = \"02:00\"\n- 2 PM = \"14:00\"\n- 10:30 AM = \"10:30\"\n- 6:15 PM = \"18:15\"\n\nRules:\n- Extract the time actually requested by the customer.\n- If AM/PM is unclear, do not guess. Return null for the relevant time field and include that field name in missing_information.\n- Do not confuse a date with a time.\n- If no end time or duration is specified, return null for end_time. The downstream workflow may apply its configured default duration.\n- Never invent a time selected by the customer.\n\n## 5. RESCHEDULING — CRITICAL\n\nFor every rescheduling request, keep the EXISTING appointment details separate from the NEW requested appointment details.\n\nUse these fields:\n\n- original_appointment_date: date of the existing appointment, in YYYY-MM-DD format.\n- original_start_time: start time of the existing appointment, in 24-hour HH:mm format.\n- appointment_date: requested NEW appointment date, in YYYY-MM-DD format.\n- start_time: requested NEW appointment start time, in 24-hour HH:mm format.\n- end_time: requested new end time, if explicitly supplied; otherwise null.\n\nExample customer message:\n\n\"Please reschedule my appointment from November 6, 2026 at 10:00 AM to November 9, 2026 at 11:00 AM.\"\n\nCorrect extraction:\n\n{\n  \"original_appointment_date\": \"2026-11-06\",\n  \"original_start_time\": \"10:00\",\n  \"appointment_date\": \"2026-11-09\",\n  \"start_time\": \"11:00\",\n  \"end_time\": null\n}\n\nImportant:\n- Never place the new date or time in original_appointment_date or original_start_time.\n- Never place the original date or time in appointment_date or start_time.\n- If the customer supplies only the new date and time, return null for the original appointment fields.\n- If the original appointment date or time is missing or ambiguous, include the corresponding field names in missing_information.\n- Never guess which existing appointment the customer intends to change.\n- Do not claim that the existing appointment was found. The downstream workflow must verify it against the appointment registry.\n- Do not use the new date and time as a fallback for the original date and time.\n\n## 6. TIMEZONE\n\n- Default timezone is \"Asia/Karachi\".\n- Use another timezone only if the customer explicitly specifies one.\n- Do not silently convert the customer's requested local appointment time to another timezone.\n\n## 7. CUSTOMER NAME AND EMAIL\n\n- Extract customer_name only when the customer provides it.\n- Extract customer_email only when the customer provides it.\n- Prefer the latest explicit correction.\n- Never silently change a name's spelling.\n- Never autocorrect or guess an email address.\n- If an email remains unclear, return null for customer_email and include \"customer_email\" in missing_information.\n- Never treat a phone number as an email address or name.\n\n## 8. MISSING INFORMATION\n\nFor a new booking, identify genuinely missing required information, including:\n- appointment_date\n- start_time\n- customer_name\n- customer_email, if required by the configured workflow\n\nFor availability requests, identify the missing date or time needed to check availability.\n\nFor rescheduling:\n- Require the original appointment date and time to identify the existing booking reliably.\n- Require the new appointment date and time to identify the requested replacement slot.\n- Include missing or ambiguous fields in missing_information.\n- Do not guess missing original appointment details.\n\nFor cancellation:\n- Extract any existing appointment date and time the customer provides.\n- If the workflow needs more information to distinguish between multiple appointments, identify that missing information instead of guessing.\n\nDo not mark end_time as missing when the downstream workflow supplies a default duration.\n\n## 9. HUMAN ESCALATION\n\nSet requires_human to true if:\n- The customer explicitly requests a person, staff member, or manager.\n- The request requires human intervention beyond the configured workflow capabilities.\n\nOtherwise, set requires_human to false.\n\n## 10. OUTPUT VALIDATION\n\n- Return exactly one valid JSON object.\n- Do not use Markdown fences.\n- Do not include explanations outside the JSON.\n- Use double quotes for keys and string values.\n- Use null for unknown values.\n- Use an empty array when no information is missing.\n- Ensure all JSON syntax is valid.\n- Include every required output field, including original_appointment_date and original_start_time.\n- Never claim an appointment has been booked, rescheduled, cancelled, or confirmed. This node only classifies intent and extracts information.\n\n## 11. SAFETY AND RELIABILITY\n\n- Never fabricate a date, time, name, email, or phone number.\n- Never reuse stale appointment data from a previous execution.\n- Never assume that a booking succeeded.\n- Never claim calendar availability was checked by this classifier.\n- The downstream workflow must validate appointment dates and times before creating or updating a Google Calendar event.\n- The downstream workflow must locate the existing appointment before rescheduling or cancelling it."
+            },
+            {
+              "content": "={{ \"Current date and time: \" + $now.setZone('Asia/Karachi').toFormat(\"yyyy-MM-dd HH:mm\") + \"\\nTimezone: Asia/Karachi\\nCustomer message: \" + $json.customer_message }}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        1000
+      ],
+      "id": "54f0ef26-24f1-4936-abb2-ad8c97d4d4ee",
+      "name": "Classify Customer Intent",
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const result = $input.first().json;\n\nlet raw =\n  result.output?.[0]?.content?.[0]?.text ??\n  result.message?.content ??\n  result.text ??\n  result.content ??\n  result;\n\nif (typeof raw === \"string\") {\n  raw = raw.replace(/^```json\\s*/i, \"\").replace(/\\s*```$/, \"\");\n  try {\n    raw = JSON.parse(raw);\n  } catch {\n    throw new Error(\"Classifier output is not valid JSON.\");\n  }\n}\n\nconst allowed = new Set([\n  \"knowledge\",\n  \"check_availability\",\n  \"book_appointment\",\n  \"reschedule_appointment\",\n  \"cancel_appointment\",\n  \"human_support\"\n]);\n\nif (!Array.isArray(raw.intents)) {\n  throw new Error(\"Classifier must return an intents array.\");\n}\n\nconst intents = [...new Set(raw.intents.filter(x => allowed.has(x)))];\n\nif (!intents.length) {\n  throw new Error(\"No supported intent detected.\");\n}\n\nconst customer = $(\"Validate Customer Input\").first().json;\n\n// Preserve the original appointment details separately.\n// These fields must be extracted by the classifier.\nconst originalAppointmentDate = raw.original_appointment_date ?? null;\nconst originalStartTime = raw.original_start_time ?? null;\n\nreturn [{\n  json: {\n    ...raw,\n    original_appointment_date: originalAppointmentDate,\n    original_start_time: originalStartTime,\n    intents,\n    primary_intent: intents.includes(\"human_support\")\n      ? \"human_support\"\n      : intents[0],\n    customer_message: customer.customer_message,\n    customer_name: raw.customer_name || customer.customer_name || \"\",\n    customer_email: raw.customer_email || customer.customer_email || \"\",\n    requires_human: Boolean(raw.requires_human) || intents.includes(\"human_support\")\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -128,
+        1000
+      ],
+      "id": "28ea9087-9d01-46ea-9bcc-0d3feccf6087",
+      "name": "Route to Appropriate Agent"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.primary_intent }}",
+                    "rightValue": "knowledge",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "ac20e188-7e77-4ba0-9010-cf4556ba64e9"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Knowledge"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "9391681f-f602-4c2c-8c2b-fe5186675b02",
+                    "leftValue": "={{ $json.primary_intent }}",
+                    "rightValue": "check_availability",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Check Availability"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "5df38c3d-4efd-4f60-a930-24d5ccafbb0a",
+                    "leftValue": "={{ $json.primary_intent }}",
+                    "rightValue": "book_appointment",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Book Appointment"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "16a37534-ecf2-468d-bfbe-44499811ef82",
+                    "leftValue": "={{ $json.primary_intent }}",
+                    "rightValue": "reschedule_appointment",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Reschedule Appointment"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "72dd28ea-02e0-46f3-ba6e-e48bc4da1182",
+                    "leftValue": "={{ $json.primary_intent }}",
+                    "rightValue": "cancel_appointment",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Cancel Appointment"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "1d90f0d8-2abd-464b-a347-948e4fbe4917",
+                    "leftValue": "={{ $json.primary_intent }}",
+                    "rightValue": "human_support",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Human Support"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        96,
+        936
+      ],
+      "id": "c431a824-c31a-42b3-a0d3-296935ceaed2",
+      "name": "Route Customer Intent"
+    },
+    {
+      "parameters": {
+        "mode": "load",
+        "pineconeIndex": {
+          "__rl": true,
+          "value": "business-assistant",
+          "mode": "list",
+          "cachedResultName": "business-assistant"
+        },
+        "prompt": "={{ $json.customer_message }}",
+        "topK": 3,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.3,
+      "position": [
+        1216,
+        -112
+      ],
+      "id": "26505b35-f69a-4855-91bc-067eff256371",
+      "name": "Retrieve Business Knowledge",
+      "credentials": {
+        "pineconeApi": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        1288,
+        112
+      ],
+      "id": "531f6a49-740d-45fa-a340-5612d88c45f0",
+      "name": "Generate Query Embeddings",
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst knowledge = `\n# ClarityWorks Consulting — Business Knowledge Base\n\n## About Us\nClarityWorks Consulting provides strategic business advisory services to small and medium-sized businesses.\n\n## Services\n- Operations optimization\n- Digital transformation\n- Growth strategy\n- Technology stack and automation consulting\n\nWe serve retail, professional services, and e-commerce businesses.\n\n## Consultation Pricing\n- Initial consultation: Free, typically 30–45 minutes.\n- Follow-up consultations: $50 per hour, billed in 15-minute increments.\n- Clients are invoiced monthly for consultations held during that month.\n\n## Working Hours\n- Monday to Friday, 9:00 AM–6:00 PM.\n- Weekend appointments are not currently offered.\n\n## Appointment Policies\n- Customers can request an appointment during business hours.\n- Availability must be checked before confirming a booking.\n- A booking is confirmed only after the calendar event is successfully created.\n- Rescheduling and cancellation requests must be verified against the existing booking.\n\n## Human Support\n- General questions not covered by this knowledge base should be referred to a human team member.\n- Urgent issues relating to an active engagement should be flagged to the assigned consultant.\n- Customers should expect a response within one business day for questions not covered here.\n`;\n\nreturn [{\n  json: {\n    knowledge_text: knowledge,\n    source: \"clarityworks-business-knowledge\",\n    category: \"business-policies\"\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -976,
+        1712
+      ],
+      "id": "ab8fef3e-ccdd-47d9-afc0-10981cfe5839",
+      "name": "Prepare Business Knowledge"
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "pineconeIndex": {
+          "__rl": true,
+          "value": "business-assistant",
+          "mode": "list",
+          "cachedResultName": "business-assistant"
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePinecone",
+      "typeVersion": 1.3,
+      "position": [
+        -672,
+        1712
+      ],
+      "id": "f7b8d03f-4775-4da9-a950-7195cbbd89fd",
+      "name": "Store Business Knowledge",
+      "credentials": {
+        "pineconeApi": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonMode": "expressionData",
+        "jsonData": "={{ $json.knowledge_text }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1.1,
+      "position": [
+        -464,
+        1984
+      ],
+      "id": "c5ac8cee-d40d-4f58-b778-a5bf97fae703",
+      "name": "Default Data Loader"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -800,
+        1968
+      ],
+      "id": "4be47c4f-b260-44a3-af7a-cbe7513a2acb",
+      "name": "Generate Knowledge Embeddings",
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "responses": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are the Knowledge Assistant for ClarityWorks Consulting.\n\nAnswer customer questions using only the business knowledge retrieved from the Pinecone knowledge base.\n\nRules:\n- Use only the retrieved context to answer questions about services, pricing, working hours, and business policies.\n- If the context does not contain the answer, clearly say that you don't have that information and offer to refer the question to the support team.\n- Never invent prices, policies, services, availability, or booking confirmations.\n- Be professional, friendly, concise, and helpful.\n- If the customer asks more than one question, address each question separately."
+            },
+            {
+              "content": "=\nCustomer question:\n{{ $json.customer_message }}\n\nRetrieved business knowledge:\n{{ $json.retrieved_context }}\n"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        -112
+      ],
+      "id": "23670849-d0da-4ae9-b3b9-c55b52ba4c0a",
+      "name": "Generate Knowledge Answer",
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst result = $input.first().json;\n\nconst answer =\n  result.output?.[0]?.content?.[0]?.text ??\n  result.message?.content ??\n  result.text ??\n  result.response ??\n  result.content;\n\nif (typeof answer !== \"string\" || !answer.trim()) {\n  throw new Error(\n    \"Knowledge answer was not found. Inspect Generate Knowledge Answer output and update the extraction path.\"\n  );\n}\n\nreturn [{\n  json: {\n    intent: \"knowledge\",\n    answer: answer.trim(),\n    status: \"success\"\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2144,
+        -112
+      ],
+      "id": "d78c9c64-8a6e-431c-ab63-c7c10dd3ad3f",
+      "name": "Prepare Knowledge Response"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst docs = $input.all();\n\nconst context = docs.map((item, i) => {\n  const data = item.json;\n  const text =\n    data.pageContent ??\n    data.document?.pageContent ??\n    data.text ??\n    data.content ??\n    \"\";\n\n  return text ? `Document ${i + 1}:\\n${text}` : \"\";\n}).filter(Boolean).join(\"\\n\\n\");\n\nif (!context) {\n  throw new Error(\n    \"No document text returned. Check Retrieve Business Knowledge output.\"\n  );\n}\n\nconst customer = $('Validate Customer Input').first().json;\n\nreturn [{\n  json: {\n    retrieved_context: context,\n    customer_message: customer.customer_message,\n    customer_name: customer.customer_name,\n    customer_email: customer.customer_email\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        -112
+      ],
+      "id": "a92db42c-ea5b-40a8-8cc6-96c46cf02c03",
+      "name": "Build Retrieved Context"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2464,
+        800
+      ],
+      "id": "f5620ac4-bad6-4f3f-996a-ad3c4780cd84",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "resource": "calendar",
+        "calendar": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_GOOGLE_CALENDAR_ID",
+          "mode": "list",
+          "cachedResultName": "YOUR_GOOGLE_CALENDAR"
+        },
+        "timeMin": "={{ DateTime.fromISO($json.appointment_date + 'T' + $json.start_time, { zone: 'Asia/Karachi' }).toISO() }}",
+        "timeMax": "={{ DateTime.fromISO($json.appointment_date + 'T' + ($json.end_time || DateTime.fromISO($json.appointment_date + 'T' + $json.start_time, { zone: 'Asia/Karachi' }).plus({ hours: 1 }).toFormat('HH:mm')), { zone: 'Asia/Karachi' }).toISO() }}",
+        "options": {
+          "timezone": {
+            "__rl": true,
+            "value": "Asia/Karachi",
+            "mode": "list",
+            "cachedResultName": "Asia/Karachi"
+          }
+        }
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        544,
+        328
+      ],
+      "id": "df67b097-d83e-4a42-b7bb-2c786ba8e27e",
+      "name": "Check Calendar Availability",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_GOOGLE_CALENDAR_ID",
+          "mode": "list",
+          "cachedResultName": "YOUR_GOOGLE_CALENDAR"
+        },
+        "start": "={{ DateTime.fromISO($('Route to Appropriate Agent').first().json.appointment_date + 'T' + $('Route to Appropriate Agent').first().json.start_time, { zone: 'Asia/Karachi' }).toISO() }}",
+        "end": "={{ DateTime.fromISO($('Route to Appropriate Agent').first().json.appointment_date + 'T' + $('Route to Appropriate Agent').first().json.start_time, { zone: 'Asia/Karachi' }).plus({ hours: 1 }).toISO() }}",
+        "additionalFields": {
+          "description": "={{ 'Customer: ' + ($('Route to Appropriate Agent').first().json.customer_name || '') + '\\nEmail: ' + ($('Route to Appropriate Agent').first().json.customer_email || '') + '\\nRequest: ' + ($('Route to Appropriate Agent').first().json.customer_message || '') }}",
+          "summary": "={{ 'Consultation - ' + ($('Route to Appropriate Agent').first().json.customer_name || 'Customer') }}"
+        }
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1280,
+        328
+      ],
+      "id": "8cc1338a-1b53-47b0-b619-c4a08d33070f",
+      "name": "Create Appointment Event",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0beb9900-d2ef-4d28-bc2e-120118d5fff9",
+              "leftValue": "= {{ $json.available }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        768,
+        328
+      ],
+      "id": "2b04c7f8-d442-48a8-9a6b-8d00c2889457",
+      "name": "Is Slot Available?"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "0679a0ae-1936-4603-bcd3-4d3f2a3319d5",
+              "name": "intent",
+              "value": "check_availability",
+              "type": "string"
+            },
+            {
+              "id": "5d76c3a2-de85-4a0b-8cd9-d2484f263ad8",
+              "name": "status",
+              "value": "unavailable",
+              "type": "string"
+            },
+            {
+              "id": "42c25012-d677-43c8-92dd-027a54683cd8",
+              "name": "answer",
+              "value": "This time slot is unavailable. Please request another appointment time.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2144,
+        520
+      ],
+      "id": "f3eab7be-318a-47b5-8e08-20d93b62bc84",
+      "name": "Prepare Unavailable Response"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID",
+          "mode": "list",
+          "cachedResultName": "YOUR_APPOINTMENT_REGISTRY"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 2087428916,
+          "mode": "list",
+          "cachedResultName": "Appointments"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "booking_id": "={{ $json.id }}",
+            "customer_name": "={{ $('Route to Appropriate Agent').first().json.customer_name }}",
+            "customer_email": "={{ $('Route to Appropriate Agent').first().json.customer_email }}",
+            "appointment_date": "={{ $('Route to Appropriate Agent').first().json.appointment_date }}",
+            "start_time": "={{ $('Route to Appropriate Agent').first().json.start_time }}",
+            "end_time": "={{ $('Route to Appropriate Agent').first().json.end_time }}",
+            "status": "=confirmed",
+            "calendar_event_id": "={{ $json.id }}",
+            "created_at": "={{ $now.toISO() }}",
+            "customer_message": "={{ $('Route to Appropriate Agent').first().json.customer_message }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "booking_id",
+              "displayName": "booking_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "customer_name",
+              "displayName": "customer_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "customer_email",
+              "displayName": "customer_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "appointment_date",
+              "displayName": "appointment_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "start_time",
+              "displayName": "start_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "end_time",
+              "displayName": "end_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "calendar_event_id",
+              "displayName": "calendar_event_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "customer_message",
+              "displayName": "customer_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1568,
+        328
+      ],
+      "id": "201e046b-1a57-42eb-8f6d-3611c7c195dd",
+      "name": "Log Appointment",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Route to Appropriate Agent').first().json.customer_email || '' }}",
+        "subject": "Appointment Confirmation — ClarityWorks Consulting",
+        "message": "=={{\n(() => {\n  const booking = $('Route to Appropriate Agent').first().json;\n  const event = $('Create Appointment Event').first().json;\n  const name = booking.customer_name || 'Valued Customer';\n  const date = booking.appointment_date;\n  const start = DateTime.fromISO(\n    date + 'T' + booking.start_time,\n    { zone: 'Asia/Karachi' }\n  );\n  const end = start.plus({ hours: 1 });\n  const time = `${start.toFormat('h:mm a')} – ${end.toFormat('h:mm a')}`;\n  const formattedDate = start.toFormat('EEEE, dd MMMM yyyy');\n  const eventUrl = event.htmlLink || 'https://calendar.google.com/calendar/u/0/r';\n  const safeName = String(name).replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));\n  return `<div style=\"margin:0;padding:32px 12px;background:#f3f6fb;font-family:Arial,Helvetica,sans-serif;color:#243047;\">\n  <div style=\"max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5eaf2;\">\n    <div style=\"background:#163b68;padding:30px 32px;text-align:center;\">\n      <p style=\"margin:0 0 8px;color:#c9ddf8;font-size:12px;letter-spacing:2px;text-transform:uppercase;\">CLARITYWORKS CONSULTING</p>\n      <h1 style=\"margin:0;color:#ffffff;font-size:25px;\">Appointment Confirmed</h1>\n      <p style=\"margin:12px 0 0;color:#e0ebf8;font-size:14px;\">Your booking is successfully confirmed.</p>\n    </div>\n    <div style=\"padding:30px 32px;\">\n      <p style=\"font-size:16px;\">Hello ${safeName},</p>\n      <p style=\"font-size:15px;line-height:1.7;color:#526078;\">Thank you for choosing ClarityWorks Consulting. We look forward to speaking with you. Please review your appointment details below.</p>\n      <div style=\"background:#f5f8fc;border:1px solid #e1e8f2;border-radius:10px;padding:22px;margin:24px 0;\">\n        <p style=\"margin:0 0 16px;color:#163b68;font-size:12px;font-weight:bold;letter-spacing:1px;\">YOUR APPOINTMENT DETAILS</p>\n        <p style=\"margin:0 0 7px;color:#778399;font-size:12px;\">DATE</p>\n        <p style=\"margin:0 0 18px;font-size:16px;font-weight:bold;\">${formattedDate}</p>\n        <p style=\"margin:0 0 7px;color:#778399;font-size:12px;\">APPOINTMENT TIME</p>\n        <p style=\"margin:0 0 6px;font-size:20px;font-weight:bold;color:#163b68;\">${time}</p>\n        <p style=\"margin:0;color:#778399;font-size:12px;\">Pakistan Standard Time (PKT, UTC+5)</p>\n      </div>\n      <div style=\"text-align:center;margin:28px 0;\">\n        <a href=\"${eventUrl}\" style=\"display:inline-block;background:#1769d2;color:#ffffff;text-decoration:none;padding:14px 25px;border-radius:6px;font-weight:bold;font-size:14px;\">View Appointment in Google Calendar</a>\n      </div>\n      <p style=\"font-size:14px;line-height:1.7;color:#526078;\">If you need to reschedule or have any questions, please reply to this email and our team will be happy to assist you.</p>\n      <p style=\"font-size:14px;line-height:1.7;margin-top:26px;\">Best regards,<br><strong>ClarityWorks Consulting</strong><br><span style=\"color:#778399;font-size:12px;\">Your trusted business assistant</span></p>\n    </div>\n    <div style=\"padding:16px 24px;background:#f8fafc;border-top:1px solid #e8edf4;text-align:center;color:#8a94a6;font-size:11px;\">This email confirms your appointment with ClarityWorks Consulting.</div>\n  </div>\n</div>`;\n})()\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1856,
+        328
+      ],
+      "id": "11fb166c-d02a-44c2-b60d-7bdf53da4467",
+      "name": "Send Booking Confirmation",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID",
+          "mode": "list",
+          "cachedResultName": "YOUR_APPOINTMENT_REGISTRY"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 2087428916,
+          "mode": "list",
+          "cachedResultName": "Appointments"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "customer_email",
+              "lookupValue": "={{ $('Route to Appropriate Agent').first().json.customer_email }}"
+            },
+            {
+              "lookupColumn": "appointment_date",
+              "lookupValue": "={{ $('Route to Appropriate Agent').first().json.original_appointment_date }}"
+            },
+            {
+              "lookupColumn": "start_time",
+              "lookupValue": "={{ $('Route to Appropriate Agent').first().json.original_start_time }}"
+            },
+            {
+              "lookupColumn": "status",
+              "lookupValue": "confirmed"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        768,
+        1000
+      ],
+      "id": "fe695492-c2e8-46ee-ba5e-2b887bcdcff3",
+      "name": "Find Existing Appointment",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "calendar": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_GOOGLE_CALENDAR_ID",
+          "mode": "list",
+          "cachedResultName": "YOUR_GOOGLE_CALENDAR"
+        },
+        "eventId": "={{ $('Find Existing Appointment').first().json.calendar_event_id }}",
+        "updateFields": {
+          "end": "={{ DateTime.fromISO($('Route to Appropriate Agent').first().json.appointment_date + 'T' + ($('Route to Appropriate Agent').first().json.end_time || DateTime.fromISO($('Route to Appropriate Agent').first().json.appointment_date + 'T' + $('Route to Appropriate Agent').first().json.start_time, { zone: 'Asia/Karachi' }).plus({ hours: 1 }).toFormat('HH:mm')), { zone: 'Asia/Karachi' }).toISO() }}",
+          "start": "={{ DateTime.fromISO($('Route to Appropriate Agent').first().json.appointment_date + 'T' + $('Route to Appropriate Agent').first().json.start_time, { zone: 'Asia/Karachi' }).toISO() }}"
+        }
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1280,
+        904
+      ],
+      "id": "4cf0dcc4-f4dc-4931-aa0b-451a25c1b066",
+      "name": "Update Existing Calendar Event",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID",
+          "mode": "list",
+          "cachedResultName": "YOUR_APPOINTMENT_REGISTRY"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 2087428916,
+          "mode": "list",
+          "cachedResultName": "Appointments"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "booking_id": "={{ $('Find Existing Appointment').first().json.booking_id }}",
+            "customer_name": "={{ $('Find Existing Appointment').first().json.customer_name }}",
+            "customer_email": "={{ $('Find Existing Appointment').first().json.customer_email }}",
+            "appointment_date": "={{ $('Route to Appropriate Agent').first().json.appointment_date }}",
+            "start_time": "={{ $('Route to Appropriate Agent').first().json.start_time }}",
+            "end_time": "={{ $('Route to Appropriate Agent').first().json.end_time }}",
+            "status": "rescheduled",
+            "calendar_event_id": "={{ $('Update Existing Calendar Event').first().json.id }}",
+            "customer_message": "={{ $('Route to Appropriate Agent').first().json.customer_message }}",
+            "created_at": "={{ $('Find Existing Appointment').first().json.created_at }}"
+          },
+          "matchingColumns": [
+            "booking_id"
+          ],
+          "schema": [
+            {
+              "id": "booking_id",
+              "displayName": "booking_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "customer_name",
+              "displayName": "customer_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "customer_email",
+              "displayName": "customer_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "appointment_date",
+              "displayName": "appointment_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "start_time",
+              "displayName": "start_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "end_time",
+              "displayName": "end_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "calendar_event_id",
+              "displayName": "calendar_event_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "customer_message",
+              "displayName": "customer_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1568,
+        904
+      ],
+      "id": "e58797c3-27fa-4eba-94ab-046019c674c5",
+      "name": "Update Appointment Registry",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Find Existing Appointment').first().json.customer_email }}",
+        "subject": "Your Consultation Has Been Rescheduled | ClarityWorks Consulting",
+        "message": "=={{\n(() => {\n  const booking = $('Route to Appropriate Agent').first().json;\n  const event = $('Update Existing Calendar Event').first().json;\n  const name = String(booking.customer_name || 'Valued Customer')\n    .replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));\n  const date = booking.appointment_date;\n  const start = DateTime.fromISO(\n    date + 'T' + booking.start_time,\n    { zone: 'Asia/Karachi' }\n  );\n  const end = start.plus({ hours: 1 });\n  const time = `${start.toFormat('h:mm a')} – ${end.toFormat('h:mm a')}`;\n  const formattedDate = start.toFormat('EEEE, dd MMMM yyyy');\n  const eventUrl = event.htmlLink || 'https://calendar.google.com/calendar/u/0/r';\n  return `<div style=\"margin:0;padding:32px 12px;background:#f3f6fb;font-family:Arial,Helvetica,sans-serif;color:#243047;\">\n  <div style=\"max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5eaf2;\">\n    <div style=\"background:#163b68;padding:30px 32px;text-align:center;\">\n      <p style=\"margin:0 0 8px;color:#c9ddf8;font-size:12px;letter-spacing:2px;text-transform:uppercase;\">CLARITYWORKS CONSULTING</p>\n      <h1 style=\"margin:0;color:#ffffff;font-size:25px;\">Appointment Rescheduled</h1>\n      <p style=\"margin:12px 0 0;color:#e0ebf8;font-size:14px;\">Your appointment details have been updated.</p>\n    </div>\n    <div style=\"padding:30px 32px;\">\n      <p style=\"font-size:16px;\">Hello ${name},</p>\n      <p style=\"font-size:15px;line-height:1.7;color:#526078;\">Your appointment with ClarityWorks Consulting has been successfully rescheduled. Please review your updated appointment details below.</p>\n      <div style=\"background:#f5f8fc;border:1px solid #e1e8f2;border-radius:10px;padding:22px;margin:24px 0;\">\n        <p style=\"margin:0 0 16px;color:#163b68;font-size:12px;font-weight:bold;letter-spacing:1px;\">UPDATED APPOINTMENT DETAILS</p>\n        <p style=\"margin:0 0 7px;color:#778399;font-size:12px;\">DATE</p>\n        <p style=\"margin:0 0 18px;font-size:16px;font-weight:bold;\">${formattedDate}</p>\n        <p style=\"margin:0 0 7px;color:#778399;font-size:12px;\">APPOINTMENT TIME</p>\n        <p style=\"margin:0 0 6px;font-size:20px;font-weight:bold;color:#163b68;\">${time}</p>\n        <p style=\"margin:0;color:#778399;font-size:12px;\">Pakistan Standard Time (PKT, UTC+5)</p>\n      </div>\n      <div style=\"text-align:center;margin:28px 0;\">\n        <a href=\"${eventUrl}\" style=\"display:inline-block;background:#1769d2;color:#ffffff;text-decoration:none;padding:14px 25px;border-radius:6px;font-weight:bold;font-size:14px;\">View Updated Appointment</a>\n      </div>\n      <p style=\"font-size:14px;line-height:1.7;color:#526078;\">If you need to make another change or have any questions, simply reply to this email and our team will be happy to assist you.</p>\n      <p style=\"font-size:14px;line-height:1.7;margin-top:26px;\">Best regards,<br><strong>ClarityWorks Consulting</strong><br><span style=\"color:#778399;font-size:12px;\">Your trusted business assistant</span></p>\n    </div>\n    <div style=\"padding:16px 24px;background:#f8fafc;border-top:1px solid #e8edf4;text-align:center;color:#8a94a6;font-size:11px;\">This email confirms your updated appointment with ClarityWorks Consulting.</div>\n  </div>\n</div>`;\n})()\n}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1856,
+        904
+      ],
+      "id": "a01857a3-53c9-48f8-bc65-c3cab75914a2",
+      "name": "Send Reschedule Confirmation",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID",
+          "mode": "list",
+          "cachedResultName": "YOUR_APPOINTMENT_REGISTRY"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 2087428916,
+          "mode": "list",
+          "cachedResultName": "Appointments"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "customer_email",
+              "lookupValue": "={{ $('Route to Appropriate Agent').first().json.customer_email }}"
+            },
+            {
+              "lookupColumn": "status",
+              "lookupValue": "confirmed"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        768,
+        1384
+      ],
+      "id": "7297676c-50a8-48ac-8e43-ea27fa1767d2",
+      "name": "Find Appointment to Cancel",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "calendar": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_GOOGLE_CALENDAR_ID",
+          "mode": "list",
+          "cachedResultName": "YOUR_GOOGLE_CALENDAR"
+        },
+        "eventId": "={{ $('Find Appointment to Cancel').first().json.calendar_event_id }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1280,
+        1288
+      ],
+      "id": "10aa83fc-a417-41d0-bd98-ed9427806829",
+      "name": "Cancel Calendar Appointment",
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_GOOGLE_SHEET_ID",
+          "mode": "list",
+          "cachedResultName": "YOUR_APPOINTMENT_REGISTRY"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 2087428916,
+          "mode": "list",
+          "cachedResultName": "Appointments"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "booking_id": "={{ $('Find Appointment to Cancel').first().json.booking_id }}",
+            "status": "cancelled",
+            "calendar_event_id": "={{ $('Find Appointment to Cancel').first().json.calendar_event_id }}",
+            "customer_name": "={{ $('Find Appointment to Cancel').first().json.customer_name }}",
+            "customer_email": "={{ $('Find Appointment to Cancel').first().json.customer_email }}",
+            "appointment_date": "={{ $('Find Appointment to Cancel').first().json.appointment_date }}",
+            "start_time": "={{ $('Find Appointment to Cancel').first().json.start_time }}",
+            "end_time": "={{ $('Find Appointment to Cancel').first().json.end_time }}",
+            "customer_message": "={{ $('Find Appointment to Cancel').first().json.customer_message }}",
+            "created_at": "={{ $('Find Appointment to Cancel').first().json.created_at }}"
+          },
+          "matchingColumns": [
+            "booking_id"
+          ],
+          "schema": [
+            {
+              "id": "booking_id",
+              "displayName": "booking_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "customer_name",
+              "displayName": "customer_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "customer_email",
+              "displayName": "customer_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "appointment_date",
+              "displayName": "appointment_date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "start_time",
+              "displayName": "start_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "end_time",
+              "displayName": "end_time",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "calendar_event_id",
+              "displayName": "calendar_event_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "customer_message",
+              "displayName": "customer_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1568,
+        1288
+      ],
+      "id": "b7dca665-46fc-4c08-b543-df7aaf3f5303",
+      "name": "Update Cancelled Appointment",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Find Appointment to Cancel').first().json.customer_email }}",
+        "subject": "=Appointment Cancellation Confirmed | ClarityWorks Consulting",
+        "message": "={{ '<div style=\"font-family:Arial,Helvetica,sans-serif;background:#f3f6fb;padding:30px 12px;color:#243047\"><div style=\"max-width:600px;margin:auto;background:#fff;border:1px solid #e5eaf2;border-radius:12px;overflow:hidden\"><div style=\"background:#163b68;color:#fff;padding:28px;text-align:center\"><p style=\"font-size:12px;letter-spacing:2px\">CLARITYWORKS CONSULTING</p><h1>Appointment Cancelled</h1><p>Your cancellation is confirmed.</p></div><div style=\"padding:30px\"><p>Hello ' + ($(\"Update Cancelled Appointment\").first().json.customer_name || \"Valued Customer\") + ',</p><p>This email confirms that your appointment with ClarityWorks Consulting has been cancelled. Keep the details below for your reference.</p><div style=\"background:#f5f8fc;border:1px solid #e1e8f2;border-radius:10px;padding:22px\"><h3 style=\"color:#163b68\">CANCELLED APPOINTMENT DETAILS</h3><p><strong>Date:</strong> ' + DateTime.fromISO($(\"Update Cancelled Appointment\").first().json.appointment_date, { zone: \"Asia/Karachi\" }).toFormat(\"EEEE, dd MMMM yyyy\") + '</p><p><strong>Appointment time:</strong> ' + DateTime.fromISO($(\"Update Cancelled Appointment\").first().json.appointment_date + \"T\" + $(\"Update Cancelled Appointment\").first().json.start_time, { zone: \"Asia/Karachi\" }).toFormat(\"h:mm a\") + ' – ' + DateTime.fromISO($(\"Update Cancelled Appointment\").first().json.appointment_date + \"T\" + $(\"Update Cancelled Appointment\").first().json.start_time, { zone: \"Asia/Karachi\" }).plus({ hours: 1 }).toFormat(\"h:mm a\") + '</p><p style=\"color:#778399;font-size:12px\">Pakistan Standard Time (PKT, UTC+5)</p></div><p>If you would like to arrange a new appointment, please contact our team.</p><p>Best regards,<br><strong>ClarityWorks Consulting</strong></p></div><div style=\"padding:16px;text-align:center;background:#f8fafc;color:#8a94a6;font-size:11px\">This email confirms your appointment cancellation.</div></div></div>' }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1856,
+        1288
+      ],
+      "id": "aec7e22f-c5e1-48a5-9eb8-739fc1047e1e",
+      "name": "Send Cancellation Confirmation",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_SLACK_CHANNEL_ID",
+          "mode": "list",
+          "cachedResultName": "YOUR_ESCALATION_CHANNEL"
+        },
+        "text": "=🚨 *Human Support Request — ClarityWorks Consulting*  *Customer:* {{ $('Route to Appropriate Agent').first().json.customer_name || 'Not provided' }} *Email:* {{ $('Route to Appropriate Agent').first().json.customer_email || 'Not provided' }}  *Customer Message:* {{ $('Route to Appropriate Agent').first().json.customer_message }}  *Reason for Escalation:* Human assistance requested or required.  *Action Required:* Please review this request and follow up with the customer.",
+        "otherOptions": {}
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        1856,
+        1672
+      ],
+      "id": "66433585-5b4a-4c3a-8c77-e5a41f723b4f",
+      "name": "Send Human Escalation",
+      "credentials": {
+        "slackApi": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "REPLACE_WITH_YOUR_N8N_CREDENTIAL"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "4f2649ed-1fbb-4438-b475-ed7771545ebd",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "=confirmed",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            },
+            {
+              "id": "503a2abe-329f-44d7-b989-6d6b9635051b",
+              "leftValue": "={{ $json.calendar_event_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        992,
+        1384
+      ],
+      "id": "d048069d-1b28-4637-a7b9-608887a48818",
+      "name": "Is Active Appointment Found?"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{\n  json: {\n    intent: \"cancel_appointment\",\n    status: \"not_found\",\n    answer: \"I couldn't find an active appointment to cancel. Please check your booking email or provide your appointment details.\"\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2144,
+        1480
+      ],
+      "id": "31a4016a-4dc3-46e2-8018-1011fbb7c210",
+      "name": "Prepare Cancellation Not Found Response"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "80e47f9b-57e8-400b-93a4-f82eafa857ad",
+              "leftValue": "={{ $json.calendar_event_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        992,
+        1000
+      ],
+      "id": "8bff2734-b989-4358-86de-bae640315fbd",
+      "name": "Is Reschedule Appointment Found?"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "747faef2-fe16-4ffc-8872-c963885313f4",
+              "name": "status",
+              "value": "not_found",
+              "type": "string"
+            },
+            {
+              "id": "dbf8f04b-b143-4efe-94e8-ea547b27a149",
+              "name": "answer",
+              "value": "I couldn't find an existing appointment for the provided details. Please check your email address and try again.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2144,
+        1096
+      ],
+      "id": "bdc9fa0a-67d4-42fb-a165-5455be6af8c3",
+      "name": "Prepare Reschedule Not Found Response"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "7e103fb8-77bf-43f4-8c1f-a15ca03f939b",
+              "leftValue": "={{ $json.customer_name }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "4baa0891-f12e-4613-9423-a68b5476b37d",
+              "leftValue": "={{ $json.customer_email }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "46be2791-0f31-41a8-befd-9ef0ce9be1c8",
+              "leftValue": "={{ $json.appointment_date || '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "4f434ec7-e7cf-4174-b5b6-598f3912dc6d",
+              "leftValue": "={{ $json.start_time || '' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        320,
+        424
+      ],
+      "id": "8a38abfa-c900-4338-be16-6298e946cac1",
+      "name": "Validate Booking Details?"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c7a4d166-2502-4a87-b141-fa4161a7388a",
+              "name": "=status",
+              "value": "missing_information",
+              "type": "string"
+            },
+            {
+              "id": "155629fa-73da-44ca-b4cd-b4fbd13175c8",
+              "name": "=answer",
+              "value": "=Please provide your preferred appointment date and start time so I can check availability and help you book your appointment.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2144,
+        712
+      ],
+      "id": "497e4b3a-7f0c-40de-a847-dfc5bd5f20ed",
+      "name": "Prepare Missing Booking Details Response"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "00a23fe9-2af1-460b-9e7e-0f8ae5b38b5c",
+              "leftValue": "={{ $('Route to Appropriate Agent').first().json.primary_intent }}",
+              "rightValue": "book_appointment",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        992,
+        232
+      ],
+      "id": "db1e9cb6-04d2-46d4-86c2-ed357b7485bf",
+      "name": "Is This a Booking Request?"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f0e0c08d-5b53-470a-b362-4f2b40922a94",
+              "name": "=status",
+              "value": "={{ $json.available ? 'available' : 'unavailable' }}",
+              "type": "string"
+            },
+            {
+              "id": "1af45b7c-022d-4895-8ce7-55f52145ff67",
+              "name": "=answer",
+              "value": "={{ $json.available ? 'The requested appointment time is available. Would you like me to book it for you?' : 'The requested appointment time is not available. Please choose another time.' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2144,
+        136
+      ],
+      "id": "5071ba3f-daec-42a1-8809-9e49557dd635",
+      "name": "Prepare Available Slot Response"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "66e0e49c-b98c-4780-8bbb-69286e4534c4",
+              "name": "status",
+              "value": "confirmed",
+              "type": "string"
+            },
+            {
+              "id": "3337ca5a-0412-4d3c-a42e-8bb9c30a4f9c",
+              "name": "answer",
+              "value": "Your appointment has been booked successfully.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2144,
+        328
+      ],
+      "id": "86243070-d1e1-4e82-bdb4-4bffa2a66555",
+      "name": "Prepare Booking Success Response"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "2f69b3ff-4b6d-4285-97d5-cbcf8a1ca45e",
+              "name": "status",
+              "value": "rescheduled",
+              "type": "string"
+            },
+            {
+              "id": "d0a8223e-81d3-4263-bd27-d3a25fcaf262",
+              "name": "answer",
+              "value": "Your appointment has been rescheduled successfully.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2144,
+        904
+      ],
+      "id": "b0604a8a-71f9-4d90-a16a-c7206cfbf8d8",
+      "name": "Prepare Reschedule Success Response"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "9368ea7c-e4ba-42ae-b93a-f73583d69d74",
+              "name": "status",
+              "value": "cancelled",
+              "type": "string"
+            },
+            {
+              "id": "b7d671b7-6ff4-499f-8d77-79e317eb3118",
+              "name": "answer",
+              "value": "Your appointment has been cancelled successfully.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2144,
+        1288
+      ],
+      "id": "e8b68dca-cd4b-4f53-8344-4c1489a9270f",
+      "name": "Prepare Cancellation Success Response"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "da40549d-6766-4733-bb1d-26e2ea3937b9",
+              "name": "status",
+              "value": "escalated",
+              "type": "string"
+            },
+            {
+              "id": "0741be6e-dd92-4c63-b2ed-acd8f05b6bf5",
+              "name": "answer",
+              "value": "Your request has been forwarded to our support team.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2144,
+        1672
+      ],
+      "id": "87460327-dd22-4c99-9322-5241e2154302",
+      "name": "Prepare Human Escalation Response"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Receive Customer Request": {
+      "main": [
+        [
+          {
+            "node": "Validate Customer Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Customer Input": {
+      "main": [
+        [
+          {
+            "node": "Classify Customer Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Customer Intent": {
+      "main": [
+        [
+          {
+            "node": "Route to Appropriate Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route to Appropriate Agent": {
+      "main": [
+        [
+          {
+            "node": "Route Customer Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Customer Intent": {
+      "main": [
+        [
+          {
+            "node": "Retrieve Business Knowledge",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate Booking Details?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Validate Booking Details?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Existing Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Find Appointment to Cancel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Human Escalation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Query Embeddings": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Retrieve Business Knowledge",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retrieve Business Knowledge": {
+      "main": [
+        [
+          {
+            "node": "Build Retrieved Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Business Knowledge": {
+      "main": [
+        [
+          {
+            "node": "Store Business Knowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Default Data Loader": {
+      "ai_document": [
+        [
+          {
+            "node": "Store Business Knowledge",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Knowledge Embeddings": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Store Business Knowledge",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Knowledge Answer": {
+      "main": [
+        [
+          {
+            "node": "Prepare Knowledge Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Retrieved Context": {
+      "main": [
+        [
+          {
+            "node": "Generate Knowledge Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Knowledge Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Appointment Event": {
+      "main": [
+        [
+          {
+            "node": "Log Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Calendar Availability": {
+      "main": [
+        [
+          {
+            "node": "Is Slot Available?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Slot Available?": {
+      "main": [
+        [
+          {
+            "node": "Is This a Booking Request?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Unavailable Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Appointment": {
+      "main": [
+        [
+          {
+            "node": "Send Booking Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Booking Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Prepare Booking Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Unavailable Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Existing Appointment": {
+      "main": [
+        [
+          {
+            "node": "Is Reschedule Appointment Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Existing Calendar Event": {
+      "main": [
+        [
+          {
+            "node": "Update Appointment Registry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Appointment Registry": {
+      "main": [
+        [
+          {
+            "node": "Send Reschedule Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Appointment to Cancel": {
+      "main": [
+        [
+          {
+            "node": "Is Active Appointment Found?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancel Calendar Appointment": {
+      "main": [
+        [
+          {
+            "node": "Update Cancelled Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Cancelled Appointment": {
+      "main": [
+        [
+          {
+            "node": "Send Cancellation Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Active Appointment Found?": {
+      "main": [
+        [
+          {
+            "node": "Cancel Calendar Appointment",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Cancellation Not Found Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Cancellation Not Found Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Reschedule Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Prepare Reschedule Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Cancellation Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Prepare Cancellation Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Human Escalation": {
+      "main": [
+        [
+          {
+            "node": "Prepare Human Escalation Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Reschedule Appointment Found?": {
+      "main": [
+        [
+          {
+            "node": "Update Existing Calendar Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Reschedule Not Found Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Reschedule Not Found Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Booking Details?": {
+      "main": [
+        [
+          {
+            "node": "Check Calendar Availability",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Missing Booking Details Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Missing Booking Details Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is This a Booking Request?": {
+      "main": [
+        [
+          {
+            "node": "Create Appointment Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Available Slot Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Available Slot Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Booking Success Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Reschedule Success Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Cancellation Success Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Human Escalation Response": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Karachi",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "errorWorkflow": "VWJuhjc5x3uvsKXn"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}
